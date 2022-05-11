@@ -3,6 +3,9 @@
 - data: Data pre-processing for div2k
 - models: cantains all the used models, SRCNN, ESPCN, EDSR .....
 - tools: all the tool functions, such as calculate pnsr,ssim,TVloss ...
+- early_stop.py: use for early stopping
+- train.py: the main training function 
+- test.py: the main test function
 
 
 ```
