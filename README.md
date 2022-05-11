@@ -1,7 +1,8 @@
 # SR
 
-data: Data pre-processing for div2k
-models: cantains all the used models
+- data: Data pre-processing for div2k
+- models: cantains all the used models, SRCNN, ESPCN, EDSR .....
+- tools: all the tool functions, such as calculate pnsr,ssim,TVloss ...
 
 
 ```
@@ -32,4 +33,9 @@ bash sr_train.sh
 # test:
 ```bash
 bash sr_test.sh
+```
+
+# test a single image to get result image
+```bash
+bash single_test.sh
 ```
