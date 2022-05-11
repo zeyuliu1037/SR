@@ -1,5 +1,9 @@
 # SR
 
+data: Data pre-processing for div2k
+models: cantains all the used models
+
+
 ```
 parser = argparse.ArgumentParser()
 parser.add_argument('--train-file', type=str, default='../dataset/DIV2K_train')
