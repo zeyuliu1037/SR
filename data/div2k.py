@@ -1,156 +1,123 @@
-import os
-import glob
+from email.mime import image
+from os import listdir
+from os.path import join
+from tkinter import Scale
+
+from torch.utils.data import Dataset
+import torchvision.transforms as transforms
+from PIL import Image, ImageFilter
 import random
-import pickle
 
-from utils import *
+def is_image_file(filename):
+    return any(filename.endswith(extension) for extension in [".png", ".jpg", ".jpeg"])
 
-import numpy as np
-import imageio
-import torch
-import torch.utils.data as data
+def load_img(filepath, color_channels):
+    # print('img: ', img)
+    if color_channels == 1:
+        img = Image.open(filepath).convert('YCbCr')
+        y, _, _ = img.split()
+        # print('y: ', y)
+        return y
+    elif color_channels == 2: # 
+        img = Image.open(filepath).convert('YCbCr')
+        return img
+    else:
+        img = Image.open(filepath).convert('RGB')
+        return img
 
-class SRData(data.Dataset):
-    def __init__(self, args, name='', train=True, benchmark=False):
-        self.args = args
-        self.name = name
-        self.train = train
-        self.split = 'train' if train else 'test'
-        self.do_eval = True
-        self.benchmark = benchmark
-        self.input_large = (args.model == 'VDSR')
-        self.scale = args.scale
-        self.idx_scale = 0
-        
-        self._set_filesystem(args.dir_data)
-        if args.ext.find('img') < 0:
-            path_bin = os.path.join(self.apath, 'bin')
-            os.makedirs(path_bin, exist_ok=True)
+class DIV2KTrain(Dataset):
+    def __init__(self, image_dir, scale=2, patch_size=32, color_channels=1):
+        super(DIV2KTrain, self).__init__()
+        train_image_dir = image_dir + '_LR_bicubic/X2'
+        target_image_dir = image_dir + '_HR'
+        train_image_list = sorted(listdir(train_image_dir))
+        target_image_list = sorted(listdir(target_image_dir))
+        self.train_image_filenames = [join(train_image_dir, x) for x in train_image_list if is_image_file(x)]
+        self.target_image_filenames = [join(target_image_dir, x) for x in target_image_list if is_image_file(x)]
+        self.scale = scale
+        self.patch_size = patch_size
+        self.color_channels = color_channels
 
-        list_hr, list_lr = self._scan()
-        if args.ext.find('img') >= 0 or benchmark:
-            self.images_hr, self.images_lr = list_hr, list_lr
-        elif args.ext.find('sep') >= 0:
-            os.makedirs(
-                self.dir_hr.replace(self.apath, path_bin),
-                exist_ok=True
-            )
-            for s in self.scale:
-                os.makedirs(
-                    os.path.join(
-                        self.dir_lr.replace(self.apath, path_bin),
-                        'X{}'.format(s)
-                    ),
-                    exist_ok=True
-                )
-            
-            self.images_hr, self.images_lr = [], [[] for _ in self.scale]
-            for h in list_hr:
-                b = h.replace(self.apath, path_bin)
-                b = b.replace(self.ext[0], '.pt')
-                self.images_hr.append(b)
-                self._check_and_load(args.ext, h, b, verbose=True) 
-            for i, ll in enumerate(list_lr):
-                for l in ll:
-                    b = l.replace(self.apath, path_bin)
-                    b = b.replace(self.ext[1], '.pt')
-                    self.images_lr[i].append(b)
-                    self._check_and_load(args.ext, l, b, verbose=True) 
-        if train:
-            n_patches = args.batch_size * args.test_every
-            n_images = len(args.data_train) * len(self.images_hr)
-            if n_images == 0:
-                self.repeat = 0
-            else:
-                self.repeat = max(n_patches // n_images, 1)
+        assert len(self.train_image_filenames) == len(self.target_image_filenames)
+        # self.input_transform = transforms.Compose([transforms.CenterCrop(crop_size), # cropping the image
+        #                             #   transforms.Resize(crop_size//zoom_factor),  # subsampling the image (half size)
+        #                             #   transforms.Resize(crop_size, interpolation=Image.BICUBIC),  # bicubic upsampling to get back the original size 
+        #                               transforms.ToTensor()])
+        # self.target_transform = transforms.Compose([transforms.CenterCrop(crop_size*2), # since it's the target, we keep its original quality
+        #                                transforms.ToTensor()])
 
-    # Below functions as used to prepare images
-    def _scan(self):
-        names_hr = sorted(
-            glob.glob(os.path.join(self.dir_hr, '*' + self.ext[0]))
-        )
-        names_lr = [[] for _ in self.scale]
-        for f in names_hr:
-            filename, _ = os.path.splitext(os.path.basename(f))
-            for si, s in enumerate(self.scale):
-                names_lr[si].append(os.path.join(
-                    self.dir_lr, 'X{}/{}x{}{}'.format(
-                        s, filename, s, self.ext[1]
-                    )
-                ))
+    def __getitem__(self, index):
+        input = load_img(self.train_image_filenames[index], self.color_channels)
+        target = load_img(self.target_image_filenames[index], self.color_channels)
 
-        return names_hr, names_lr
+        w_lr, h_lr = input.size
+        lr_top = random.randint(0, h_lr - self.patch_size)
+        lr_left = random.randint(0, w_lr - self.patch_size)
+        lr_box = (lr_top, lr_left, lr_top+self.patch_size, lr_left+self.patch_size)
+        input = input.crop(lr_box)
 
-    def _set_filesystem(self, dir_data):
-        self.apath = os.path.join(dir_data, self.name)
-        self.dir_hr = os.path.join(self.apath, 'HR')
-        self.dir_lr = os.path.join(self.apath, 'LR_bicubic')
-        if self.input_large: self.dir_lr += 'L'
-        self.ext = ('.png', '.png')
+        # print('lr_top: {}, scale: {}'.format(lr_top, self.scale))
+        hr_top = int(lr_top * self.scale)
+        hr_left = int(lr_left * self.scale)
+        hr_box = (hr_top, hr_left, hr_top+self.patch_size*self.scale, hr_left+self.patch_size*self.scale)
+        target = target.crop(hr_box)
 
-    def _check_and_load(self, ext, img, f, verbose=True):
-        if not os.path.isfile(f) or ext.find('reset') >= 0:
-            if verbose:
-                print('Making a binary: {}'.format(f))
-            with open(f, 'wb') as _f:
-                pickle.dump(imageio.imread(img), _f)
+        input = transforms.ToTensor()(input)
+        target = transforms.ToTensor()(target)
 
-    def __getitem__(self, idx):
-        lr, hr, filename = self._load_file(idx)
-        pair = self.get_patch(lr, hr)
-        pair = set_channel(*pair, n_channels=self.args.n_colors)
-        pair_t = np2Tensor(*pair, rgb_range=self.args.rgb_range)
+        # input = input.filter(ImageFilter.GaussianBlur(1)) 
+        # input = self.input_transform(input)
+        # target = self.target_transform(target)
 
-        return pair_t[0], pair_t[1], filename
+        return input, target
 
     def __len__(self):
-        if self.train:
-            return len(self.images_hr) * self.repeat
-        else:
-            return len(self.images_hr)
+        
+        return len(self.train_image_filenames)
 
-    def _get_index(self, idx):
-        if self.train:
-            return idx % len(self.images_hr)
-        else:
-            return idx
+class DIV2KEval(Dataset):
+    def __init__(self, image_dir, scale=2, color_channels=1):
+        super(DIV2KEval, self).__init__()
+        train_image_dir = image_dir + '_LR_bicubic/X2'
+        target_image_dir = image_dir + '_HR'
+        train_image_list = sorted(listdir(train_image_dir))
+        target_image_list = sorted(listdir(target_image_dir))
+        self.train_image_filenames = [join(train_image_dir, x) for x in train_image_list if is_image_file(x)]
+        self.target_image_filenames = [join(target_image_dir, x) for x in target_image_list if is_image_file(x)]
+        self.color_channels = color_channels
+        # f = open("dataset/model_Weight.txt",'a')
+        # for s in self.train_image_filenames:
+        #     f.write(s)
+        #     f.write(' ')
+        # f.write('\n')
+        # for s in self.target_image_filenames:
+        #     f.write(s)
+        #     f.write(' ')
 
-    def _load_file(self, idx):
-        idx = self._get_index(idx)
-        f_hr = self.images_hr[idx]
-        f_lr = self.images_lr[self.idx_scale][idx]
+        assert len(self.train_image_filenames) == len(self.target_image_filenames)
 
-        filename, _ = os.path.splitext(os.path.basename(f_hr))
-        if self.args.ext == 'img' or self.benchmark:
-            hr = imageio.imread(f_hr)
-            lr = imageio.imread(f_lr)
-        elif self.args.ext.find('sep') >= 0:
-            with open(f_hr, 'rb') as _f:
-                hr = pickle.load(_f)
-            with open(f_lr, 'rb') as _f:
-                lr = pickle.load(_f)
+    def __getitem__(self, index):
+        input = load_img(self.train_image_filenames[index], self.color_channels)
+        target = load_img(self.target_image_filenames[index], self.color_channels)
+        
+        input = transforms.ToTensor()(input)
+        target = transforms.ToTensor()(target)
 
-        return lr, hr, filename
+        # print('indes: {}, input shape: {}, filename: {}'.format(index, input.shape, self.train_image_filenames[index]))
+        # print('target shape: {}, filename: {}'.format(target.shape, self.target_image_filenames[index]))
 
-    def get_patch(self, lr, hr):
-        scale = self.scale[self.idx_scale]
-        if self.train:
-            lr, hr = get_patch(
-                lr, hr,
-                patch_size=self.args.patch_size,
-                scale=scale,
-                multi=(len(self.scale) > 1),
-                input_large=self.input_large
-            )
-            if not self.args.no_augment: lr, hr = augment(lr, hr)
-        else:
-            ih, iw = lr.shape[:2]
-            hr = hr[0:ih * scale, 0:iw * scale]
+        return input, target
 
-        return lr, hr
+    def __len__(self):
+        
+        return len(self.train_image_filenames)
 
-    def set_scale(self, idx_scale):
-        if not self.input_large:
-            self.idx_scale = idx_scale
-        else:
-            self.idx_scale = random.randint(0, len(self.scale) - 1)
+if __name__ == '__main__':
+    # test = DIV2KTrain('dataset/DIV2K_valid')
+    test = DIV2KEval('dataset/DIV2K_valid')
+    print(test)
+    print(len(test))
+    print(len(test[0]))
+    print(test[0][0].shape)
+    print(test[0][1].shape)
+    # print(test[0][0][0][0])
